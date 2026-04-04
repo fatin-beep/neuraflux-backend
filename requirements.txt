@@ -1,5 +1,6 @@
 fastapi
 uvicorn
+pydantic[email]
 supabase
-python-dotenv
 sib-api-v3-sdk
+python-dotenv
