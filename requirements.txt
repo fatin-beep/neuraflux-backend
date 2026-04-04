@@ -1,0 +1,5 @@
+fastapi
+uvicorn
+supabase
+python-dotenv
+sib-api-v3-sdk
