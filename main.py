@@ -1,66 +1,51 @@
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel, EmailStr
-from supabase import create_client, Client
 import os
+import requests
+from fastapi import FastAPI, Request
+from pydantic import BaseModel
 from dotenv import load_dotenv
-import sib_api_v3_sdk
-from sib_api_v3_sdk.rest import ApiException
 
-# 1. Load Environment Variables
 load_dotenv()
-
 app = FastAPI()
 
-# 2. Setup Supabase & Brevo Keys
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-BREVO_API_KEY = os.getenv("BREVO_API_KEY")
+# Setup Environment Variables from Railway/Local .env
+BREVO_API_KEY = os.getenv('BREVO_API_KEY')
+BREVO_URL = 'https://api.brevo.com/v3/contacts'
 
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-
-# 3. Data Model for the Contact Form
-class Lead(BaseModel):
-    name: str
-    email: EmailStr
-    message: str
-
-# --- NEW: THE HOME ROUTE ---
-# This fixes the "Not Found" error when you open your Railway link
 @app.get("/")
 def read_root():
-    return {
-        "status": "online", 
-        "message": "Neuraflux Backend is officially Live!",
-        "version": "1.0.0"
-    }
+    return {"status": "online", "message": "Neuraflux Backend is Live!"}
 
-# 4. The Form Submission Route
-@app.post("/submit-form")
-async def create_lead(lead: Lead):
-    try:
-        # Save to Supabase
-        data = {
-            "name": lead.name,
-            "email": lead.email,
-            "message": lead.message
-        }
-        response = supabase.table("leads").insert(data).execute()
+# ENDPOINT 1: For Cal.com Bookings (Sequence A)
+@app.post('/api/audit-booked')
+async def audit_booked(request: Request):
+    data = await request.json()
+    payload = data.get('payload', {})
+    email = payload.get('email', '')
+    first_name = payload.get('firstName', '')
 
-        # Send Email via Brevo
-        configuration = sib_api_v3_sdk.Configuration()
-        configuration.api_key['api-key'] = BREVO_API_KEY
-        api_instance = sib_api_v3_sdk.TransactionalEmailsApi(sib_api_v3_sdk.ApiClient(configuration))
+    requests.post(BREVO_URL, json={
+        'email': email,
+        'attributes': {'FIRSTNAME': first_name, 'sequence': 'A'},
+        'updateEnabled': True
+    }, headers={
+        'api-key': BREVO_API_KEY,
+        'Content-Type': 'application/json'
+    })
+    return {'status': 'ok'}
 
-        send_smtp_email = sib_api_v3_sdk.SendSmtpEmail(
-            to=[{"email": "fatinbutt2@gmail.com", "name": "Fatin"}], # Change to your email
-            reply_to={"email": lead.email, "name": lead.name},
-            template_id=1, # Ensure you have a template set up in Brevo!
-            params={"NAME": lead.name, "MESSAGE": lead.message}
-        )
-        
-        api_instance.send_transac_email(send_smtp_email)
+# ENDPOINT 2: For Chatbot/Email Capture (Sequence B)
+class EmailCapture(BaseModel):
+    email: str
+    first_name: str = ''
 
-        return {"status": "success", "message": "Lead saved and email sent!"}
-
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
+@app.post('/api/email-capture')
+async def email_capture(body: EmailCapture):
+    requests.post(BREVO_URL, json={
+        'email': body.email,
+        'attributes': {'FIRSTNAME': body.first_name, 'sequence': 'B'},
+        'updateEnabled': True
+    }, headers={
+        'api-key': BREVO_API_KEY,
+        'Content-Type': 'application/json'
+    })
+    return {'status': 'ok'}
