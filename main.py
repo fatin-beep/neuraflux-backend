@@ -14,13 +14,22 @@ BREVO_URL = 'https://api.brevo.com/v3/contacts'
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+
+# Initialize Supabase Client
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+# --- DATA MODELS ---
+class EmailCapture(BaseModel):
+    email: str
+    first_name: str
+    business: str = "N/A"
+    challenge: str = "N/A"
 
 @app.get("/")
 def read_root():
     return {"status": "online", "message": "Neuraflux Backend is Live!"}
 
-# --- ENDPOINT 1: For Cal.com Bookings (Sequence A) ---
+# --- ENDPOINT 1: For Cal.com Bookings (Sarmad's Sequence A) ---
 @app.post('/api/audit-booked')
 async def audit_booked(request: Request):
     data = await request.json()
@@ -28,17 +37,7 @@ async def audit_booked(request: Request):
     email = payload.get('email', '')
     first_name = payload.get('firstName', '')
 
-    # [span_2](start_span)[span_3](start_span)A. Add to Brevo with sequence=A[span_2](end_span)[span_3](end_span)
-    requests.post(BREVO_URL, json={
-        'email': email,
-        'attributes': {'FIRSTNAME': first_name, 'sequence': 'A'},
-        'updateEnabled': True
-    }, headers={
-        'api-key': BREVO_API_KEY,
-        'Content-Type': 'application/json'
-    })
-
-    # [span_4](start_span)B. Log to Supabase contacts table for Hamza[span_4](end_span)
+    # Log to 'contacts' table for backup
     supabase.table("contacts").insert({
         "email": email,
         "first_name": first_name,
@@ -47,28 +46,30 @@ async def audit_booked(request: Request):
 
     return {'status': 'ok'}
 
-# --- ENDPOINT 2: For Chatbot/Email Capture (Sequence B) ---
-class EmailCapture(BaseModel):
-    email: str
-    first_name: str = ''
-
+# --- ENDPOINT 2: For Website Form (Hamza's DB + Sarmad's Sequence B) ---
 @app.post('/api/email-capture')
 async def email_capture(body: EmailCapture):
-    # [span_5](start_span)A. Add to Brevo with sequence=B[span_5](end_span)
-    requests.post(BREVO_URL, json={
-        'email': body.email,
-        'attributes': {'FIRSTNAME': body.first_name, 'sequence': 'B'},
-        'updateEnabled': True
-    }, headers={
-        'api-key': BREVO_API_KEY,
-        'Content-Type': 'application/json'
-    })
+    # 1. Log to Hamza's 'Leads' table 
+    # Note: We map 'first_name' to the 'name' column Hamza created
+    supabase.table("Leads").insert({
+        "name": body.first_name,
+        "email": body.email,
+        "business": body.business,
+        "challenge": body.challenge
+    }).execute()
 
-    # [span_6](start_span)[span_7](start_span)B. Log to Supabase contacts table for Hamza[span_6](end_span)[span_7](end_span)
+    # 2. Log to 'contacts' table (Sarmad's email backup)
     supabase.table("contacts").insert({
         "email": body.email,
         "first_name": body.first_name,
         "sequence": "B"
     }).execute()
+
+    # 3. Trigger Brevo Automation
+    requests.post(BREVO_URL, json={
+        'email': body.email,
+        'attributes': {'FIRSTNAME': body.first_name, 'sequence': 'B'},
+        'updateEnabled': True
+    }, headers={'api-key': BREVO_API_KEY, 'Content-Type': 'application/json'})
 
     return {'status': 'ok'}
