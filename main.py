@@ -11,7 +11,6 @@ app = FastAPI()
 # 1. Setup Environment Variables
 BREVO_API_KEY = os.getenv('BREVO_API_KEY')
 BREVO_URL = 'https://api.brevo.com/v3/contacts'
-
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
@@ -19,61 +18,38 @@ SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # --- DATA MODELS ---
-class EmailCapture(BaseModel):
+class LeadCapture(BaseModel):
+    name: str        # Matches 'name' in screenshot
+    email: str       # Matches 'email' in screenshot
+    business: str    # Matches 'business' in screenshot
+    challenge: str   # Matches 'challenge' in screenshot
+
+class ChatSession(BaseModel):
+    flow: str
     email: str
-    first_name: str
-    business: str = "N/A"
-    challenge: str = "N/A"
+    messages: dict   # Matches {} json in your text description
 
 # --- HEALTH CHECK ---
 @app.get("/")
 def read_root():
-    return {"status": "online", "message": "Neuraflux Backend is Live!"}
+    return {"status": "online", "message": "Neuraflux Backend Synced!"}
 
-# --- ENDPOINT 1: For Cal.com Bookings (Sarmad's Sequence A) ---
-@app.post('/api/audit-booked')
-async def audit_booked(request: Request):
-    try:
-        data = await request.json()
-        payload = data.get('payload', {})
-        email = payload.get('email', '')
-        first_name = payload.get('firstName', '')
-
-        # Log to 'contacts' table
-        supabase.table("contacts").insert({
-            "email": email,
-            "first_name": first_name,
-            "sequence": "A"
-        }).execute()
-
-        return {'status': 'ok'}
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
-
-# --- ENDPOINT 2: For Website Form (Hamza's DB + Sarmad's Sequence B) ---
+# --- ENDPOINT 1: Website Form (Saves to 'Leads' table) ---
 @app.post('/api/email-capture')
-async def email_capture(body: EmailCapture):
+async def email_capture(body: LeadCapture):
     try:
-        # 1. Log to Hamza's 'Leads' table 
-        # Maps 'first_name' to 'name' to match Hamza's SQL exactly
+        # 1. Insert into Hamza's 'Leads' table
         supabase.table("Leads").insert({
-            "name": body.first_name,
+            "name": body.name,
             "email": body.email,
             "business": body.business,
             "challenge": body.challenge
         }).execute()
 
-        # 2. Log to 'contacts' table (Sarmad's email backup)
-        supabase.table("contacts").insert({
-            "email": body.email,
-            "first_name": body.first_name,
-            "sequence": "B"
-        }).execute()
-
-        # 3. Trigger Brevo Automation
+        # 2. Trigger Brevo Sequence B
         requests.post(BREVO_URL, json={
             'email': body.email,
-            'attributes': {'FIRSTNAME': body.first_name, 'sequence': 'B'},
+            'attributes': {'FIRSTNAME': body.name, 'sequence': 'B'},
             'updateEnabled': True
         }, headers={'api-key': BREVO_API_KEY, 'Content-Type': 'application/json'})
 
@@ -81,32 +57,25 @@ async def email_capture(body: EmailCapture):
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
-# --- ENDPOINT 3: For Abdullah's Chatbot (Phase 3 Integration) ---
-@app.post('/api/chat/email')
-async def chatbot_email_capture(body: EmailCapture):
+# --- ENDPOINT 2: Chatbot (Saves to 'Chat_sessions' table) ---
+@app.post('/api/chat/session')
+async def save_chat(body: ChatSession):
     try:
-        # 1. Log to Hamza's 'Leads' table
-        supabase.table("Leads").insert({
-            "name": body.first_name,
+        # 1. Insert into 'Chat_sessions' table
+        supabase.table("Chat_sessions").insert({
+            "flow": body.flow,
             "email": body.email,
-            "business": body.business,
-            "challenge": f"Chatbot: {body.challenge}" # Identifies lead source
+            "messages": body.messages
         }).execute()
 
-        # 2. Log to Sarmad's 'contacts' table
-        supabase.table("contacts").insert({
-            "email": body.email,
-            "first_name": body.first_name,
-            "sequence": "B"
-        }).execute()
+        # 2. Trigger Brevo if email is provided
+        if body.email:
+            requests.post(BREVO_URL, json={
+                'email': body.email,
+                'attributes': {'sequence': 'B'},
+                'updateEnabled': True
+            }, headers={'api-key': BREVO_API_KEY, 'Content-Type': 'application/json'})
 
-        # 3. Trigger Brevo
-        requests.post(BREVO_URL, json={
-            'email': body.email,
-            'attributes': {'FIRSTNAME': body.first_name, 'sequence': 'B'},
-            'updateEnabled': True
-        }, headers={'api-key': BREVO_API_KEY, 'Content-Type': 'application/json'})
-
-        return {'status': 'ok', 'message': 'Chatbot lead saved!'}
+        return {'status': 'ok'}
     except Exception as e:
         return {"status": "error", "message": str(e)}
