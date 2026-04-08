@@ -19,22 +19,42 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # --- DATA MODELS ---
 class LeadCapture(BaseModel):
-    name: str        # Matches 'name' in screenshot
-    email: str       # Matches 'email' in screenshot
-    business: str    # Matches 'business' in screenshot
-    challenge: str   # Matches 'challenge' in screenshot
+    name: str        
+    email: str       
+    business: str    
+    challenge: str   
 
 class ChatSession(BaseModel):
     flow: str
     email: str
-    messages: dict   # Matches {} json in your text description
+    messages: dict   
 
 # --- HEALTH CHECK ---
 @app.get("/")
 def read_root():
-    return {"status": "online", "message": "Neuraflux Backend Synced!"}
+    return {"status": "online", "message": "Neuraflux Backend Synced & Fully Operational!"}
 
-# --- ENDPOINT 1: Website Form (Saves to 'Leads' table) ---
+# --- ENDPOINT 1: For Cal.com / Calendly (Sarmad's Sequence A) ---
+@app.post('/api/audit-booked')
+async def audit_booked(request: Request):
+    try:
+        data = await request.json()
+        payload = data.get('payload', {})
+        email = payload.get('email', '')
+        first_name = payload.get('firstName', '')
+
+        # Log to Sarmad's 'contacts' table
+        supabase.table("contacts").insert({
+            "email": email,
+            "first_name": first_name,
+            "sequence": "A"
+        }).execute()
+
+        return {'status': 'ok', 'message': 'Calendly booking logged'}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+# --- ENDPOINT 2: Website Form (Hamza's 'Leads' Table + Sequence B) ---
 @app.post('/api/email-capture')
 async def email_capture(body: LeadCapture):
     try:
@@ -53,11 +73,11 @@ async def email_capture(body: LeadCapture):
             'updateEnabled': True
         }, headers={'api-key': BREVO_API_KEY, 'Content-Type': 'application/json'})
 
-        return {'status': 'ok'}
+        return {'status': 'ok', 'message': 'Lead saved to Leads table'}
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
-# --- ENDPOINT 2: Chatbot (Saves to 'Chat_sessions' table) ---
+# --- ENDPOINT 3: Chatbot (Hamza's 'Chat_sessions' Table + Sequence B) ---
 @app.post('/api/chat/session')
 async def save_chat(body: ChatSession):
     try:
@@ -76,6 +96,6 @@ async def save_chat(body: ChatSession):
                 'updateEnabled': True
             }, headers={'api-key': BREVO_API_KEY, 'Content-Type': 'application/json'})
 
-        return {'status': 'ok'}
+        return {'status': 'ok', 'message': 'Session saved to Chat_sessions'}
     except Exception as e:
         return {"status": "error", "message": str(e)}
