@@ -32,33 +32,34 @@ class ChatSession(BaseModel):
 # --- HEALTH CHECK ---
 @app.get("/")
 def read_root():
-    return {"status": "online", "message": "Neuraflux Backend Synced & Fully Operational!"}
+    return {"status": "online", "message": "Neuraflux Backend: All systems synced to Leads & Chat_sessions"}
 
-# --- ENDPOINT 1: For Cal.com / Calendly (Sarmad's Sequence A) ---
+# --- ENDPOINT 1: For Cal.com / Calendly (Sarmad's Data -> Leads Table) ---
 @app.post('/api/audit-booked')
 async def audit_booked(request: Request):
     try:
         data = await request.json()
         payload = data.get('payload', {})
         email = payload.get('email', '')
-        first_name = payload.get('firstName', '')
+        first_name = payload.get('firstName', 'Calendly Lead')
 
-        # Log to Sarmad's 'contacts' table
-        supabase.table("contacts").insert({
+        # Redirecting Sarmad's data to Hamza's 'Leads' table per latest update
+        supabase.table("Leads").insert({
+            "name": first_name,
             "email": email,
-            "first_name": first_name,
-            "sequence": "A"
+            "business": "Booked via Calendly",
+            "challenge": "Strategy Audit Scheduled"
         }).execute()
 
-        return {'status': 'ok', 'message': 'Calendly booking logged'}
+        return {'status': 'ok', 'message': 'Calendly booking synced to Leads table'}
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
-# --- ENDPOINT 2: Website Form (Hamza's 'Leads' Table + Sequence B) ---
+# --- ENDPOINT 2: Website Form (Hamza's 'Leads' Table) ---
 @app.post('/api/email-capture')
 async def email_capture(body: LeadCapture):
     try:
-        # 1. Insert into Hamza's 'Leads' table
+        # Insert into 'Leads' table
         supabase.table("Leads").insert({
             "name": body.name,
             "email": body.email,
@@ -66,29 +67,29 @@ async def email_capture(body: LeadCapture):
             "challenge": body.challenge
         }).execute()
 
-        # 2. Trigger Brevo Sequence B
+        # Trigger Brevo Sequence B
         requests.post(BREVO_URL, json={
             'email': body.email,
             'attributes': {'FIRSTNAME': body.name, 'sequence': 'B'},
             'updateEnabled': True
         }, headers={'api-key': BREVO_API_KEY, 'Content-Type': 'application/json'})
 
-        return {'status': 'ok', 'message': 'Lead saved to Leads table'}
+        return {'status': 'ok', 'message': 'Website lead saved to Leads'}
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
-# --- ENDPOINT 3: Chatbot (Hamza's 'Chat_sessions' Table + Sequence B) ---
+# --- ENDPOINT 3: Chatbot (Hamza's 'Chat_sessions' Table) ---
 @app.post('/api/chat/session')
 async def save_chat(body: ChatSession):
     try:
-        # 1. Insert into 'Chat_sessions' table
+        # Insert into 'Chat_sessions' table
         supabase.table("Chat_sessions").insert({
             "flow": body.flow,
             "email": body.email,
             "messages": body.messages
         }).execute()
 
-        # 2. Trigger Brevo if email is provided
+        # Trigger Brevo Sequence B if email exists
         if body.email:
             requests.post(BREVO_URL, json={
                 'email': body.email,
@@ -96,6 +97,6 @@ async def save_chat(body: ChatSession):
                 'updateEnabled': True
             }, headers={'api-key': BREVO_API_KEY, 'Content-Type': 'application/json'})
 
-        return {'status': 'ok', 'message': 'Session saved to Chat_sessions'}
+        return {'status': 'ok', 'message': 'Chat session saved to Chat_sessions'}
     except Exception as e:
         return {"status": "error", "message": str(e)}
