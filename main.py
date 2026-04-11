@@ -1,102 +1,122 @@
 import os
-import requests
-from fastapi import FastAPI, Request
-from pydantic import BaseModel
+import hmac
+import hashlib
+import sib_api_v3_sdk
+from fastapi import FastAPI, Request, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, EmailStr
 from dotenv import load_dotenv
 from supabase import create_client, Client
+from sib_api_v3_sdk.rest import ApiException
 
 load_dotenv()
 app = FastAPI()
 
-# 1. Setup Environment Variables
-BREVO_API_KEY = os.getenv('BREVO_API_KEY')
-BREVO_URL = 'https://api.brevo.com/v3/contacts'
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=['https://neuraflux.io', 'http://localhost:3000'],
+    allow_methods=['GET', 'POST'],
+    allow_headers=['*'],
+)
+
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+BREVO_API_KEY = os.getenv("BREVO_API_KEY")
+CAL_WEBHOOK_SECRET = os.getenv("CALCOM_WEBHOOK_SECRET")
 
-# Initialize Supabase Client
+SEQ_A_ID = int(os.getenv('SEQUENCE_A_ID', 7))
+SEQ_B_ID = int(os.getenv('SEQUENCE_B_ID', 6))
+
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# --- DATA MODELS ---
-class LeadCapture(BaseModel):
-    name: str        
-    email: str       
-    business: str    
-    challenge: str   
+configuration = sib_api_v3_sdk.Configuration()
+configuration.api_key['api-key'] = BREVO_API_KEY
+brevo_contacts_api = sib_api_v3_sdk.ContactsApi(sib_api_v3_sdk.ApiClient(configuration))
 
-class ChatSession(BaseModel):
-    flow: str
-    email: str
-    messages: dict   
+class ContactForm(BaseModel):
+    name: str
+    email: EmailStr
+    business: str
+    challenge: str
 
-# --- HEALTH CHECK ---
-@app.get("/")
-def read_root():
-    return {"status": "online", "message": "Neuraflux Backend: All systems synced to Leads & Chat_sessions"}
+class ChatEmail(BaseModel):
+    email: EmailStr
+    name: str = "Chat User"
+    session_id: str = None
+    flow: str = "B"
 
-# --- ENDPOINT 1: For Cal.com / Calendly (Sarmad's Data -> Leads Table) ---
-@app.post('/api/audit-booked')
-async def audit_booked(request: Request):
+def verify_cal_signature(payload: bytes, signature: str, secret: str) -> bool:
+    if not secret or not signature:
+        return False
+    expected = hmac.new(secret.encode(), payload, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, signature)
+
+def add_to_brevo(email: str, first_name: str, list_id: int):
     try:
-        data = await request.json()
-        payload = data.get('payload', {})
-        email = payload.get('email', '')
-        first_name = payload.get('firstName', 'Calendly Lead')
+        contact = sib_api_v3_sdk.CreateContact(
+            email=email,
+            attributes={'FIRSTNAME': first_name},
+            list_ids=[list_id],
+            update_enabled=True
+        )
+        brevo_contacts_api.create_contact(contact)
+    except ApiException as e:
+        print(f"Brevo Error: {e}")
 
-        # Redirecting Sarmad's data to Hamza's 'Leads' table per latest update
-        supabase.table("Leads").insert({
-            "name": first_name,
-            "email": email,
-            "business": "Booked via Calendly",
-            "challenge": "Strategy Audit Scheduled"
-        }).execute()
+@app.get('/api/health')
+def health():
+    return {'status': 'ok'}
 
-        return {'status': 'ok', 'message': 'Calendly booking synced to Leads table'}
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
-
-# --- ENDPOINT 2: Website Form (Hamza's 'Leads' Table) ---
-@app.post('/api/email-capture')
-async def email_capture(body: LeadCapture):
+@app.post('/api/contact')
+async def contact_form(body: ContactForm):
     try:
-        # Insert into 'Leads' table
-        supabase.table("Leads").insert({
+        supabase.table("leads").insert({
             "name": body.name,
             "email": body.email,
             "business": body.business,
-            "challenge": body.challenge
+            "challenge": body.challenge,
+            "source": 'form',
+            "sequence": 'B'
         }).execute()
+        add_to_brevo(body.email, body.name, SEQ_B_ID)
+        return {"status": "success"}
+    except Exception:
+        raise HTTPException(status_code=500, detail="Internal Error")
 
-        # Trigger Brevo Sequence B
-        requests.post(BREVO_URL, json={
-            'email': body.email,
-            'attributes': {'FIRSTNAME': body.name, 'sequence': 'B'},
-            'updateEnabled': True
-        }, headers={'api-key': BREVO_API_KEY, 'Content-Type': 'application/json'})
-
-        return {'status': 'ok', 'message': 'Website lead saved to Leads'}
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
-
-# --- ENDPOINT 3: Chatbot (Hamza's 'Chat_sessions' Table) ---
-@app.post('/api/chat/session')
-async def save_chat(body: ChatSession):
+@app.post('/api/audit-booked')
+async def audit_booked(request: Request):
+    body_bytes = await request.body()
+    signature = request.headers.get("X-Cal-Signature-256")
+    if not verify_cal_signature(body_bytes, signature, CAL_WEBHOOK_SECRET):
+        raise HTTPException(status_code=401, detail="Invalid Signature")
+    data = await request.json()
+    payload = data.get('payload', {})
+    attendees = payload.get('attendees', [])
+    if not attendees:
+        raise HTTPException(status_code=400, detail="No attendees found")
+    email = attendees[0].get('email')
+    name = attendees[0].get('name', 'Calendly Lead')
     try:
-        # Insert into 'Chat_sessions' table
-        supabase.table("Chat_sessions").insert({
-            "flow": body.flow,
-            "email": body.email,
-            "messages": body.messages
+        supabase.table("leads").insert({
+            "name": name,
+            "email": email,
+            "source": 'calendly',
+            "sequence": 'A',
+            "business": "Booked via Cal.com"
         }).execute()
-
-        # Trigger Brevo Sequence B if email exists
-        if body.email:
-            requests.post(BREVO_URL, json={
-                'email': body.email,
-                'attributes': {'sequence': 'B'},
-                'updateEnabled': True
-            }, headers={'api-key': BREVO_API_KEY, 'Content-Type': 'application/json'})
-
-        return {'status': 'ok', 'message': 'Chat session saved to Chat_sessions'}
+        add_to_brevo(email, name, SEQ_A_ID)
+        return {"status": "ok"}
     except Exception as e:
-        return {"status": "error", "message": str(e)}
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post('/api/chat/email')
+async def chat_email(body: ChatEmail):
+    try:
+        supabase.table("chat_sessions").insert({
+            "email": body.email,
+            "flow": body.flow
+        }).execute()
+        add_to_brevo(body.email, body.name, SEQ_B_ID)
+        return {"status": "ok"}
+    except Exception:
+        raise HTTPException(status_code=500, detail="Internal Error")
