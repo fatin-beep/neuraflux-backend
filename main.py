@@ -2,6 +2,7 @@ import os
 import hmac
 import hashlib
 import sib_api_v3_sdk
+from sib_api_v3_sdk.rest import ApiException
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, EmailStr
@@ -22,7 +23,7 @@ app.add_middleware(
 supabase: Client = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_KEY"))
 configuration = sib_api_v3_sdk.Configuration()
 configuration.api_key['api-key'] = os.getenv("BREVO_API_KEY")
-brevo_contacts_api = sib_api_v3_sdk.ContactsApi(sib_api_v3_sdk.ApiClient(configuration))
+api_instance = sib_api_v3_sdk.ContactsApi(sib_api_v3_sdk.ApiClient(configuration))
 
 class ContactForm(BaseModel):
     name: str
@@ -40,49 +41,45 @@ def verify_cal_signature(payload: bytes, signature: str, secret: str) -> bool:
     expected = hmac.new(secret.encode(), payload, hashlib.sha256).hexdigest()
     return hmac.compare_digest(expected, signature)
 
+# Re-written to match Sarmad's exact SDK requirement
 def add_to_brevo(email: str, first_name: str, list_id: int):
     try:
-        contact = sib_api_v3_sdk.CreateContact(
+        create_contact = sib_api_v3_sdk.CreateContact(
             email=email,
-            attributes={'FIRSTNAME': first_name},
+            attributes={"FIRSTNAME": first_name},
             list_ids=[list_id],
             update_enabled=True
         )
-        brevo_contacts_api.create_contact(contact)
+        api_instance.create_contact(create_contact)
+    except ApiException as e:
+        print(f"Brevo API Error: {e}")
     except Exception as e:
-        print(f"Brevo Error: {e}")
+        print(f"General Error: {e}")
 
 @app.get('/api/health')
 def health():
     return {'status': 'ok'}
 
-# 1. HAMZA'S ENDPOINT (Website Form)
 @app.post('/api/contact')
 async def contact_form(body: ContactForm):
     try:
-        # Table name with Capital L
         supabase.table("Leads").insert({
-            "name": body.name, 
-            "email": body.email, 
-            "business": body.business,
-            "challenge": body.challenge, 
-            "source": "form", 
-            "sequence": "B"
+            "name": body.name, "email": body.email, "business": body.business,
+            "challenge": body.challenge, "source": "form", "sequence": "B"
         }).execute()
-        
-        add_to_brevo(body.email, body.name, int(os.getenv('SEQUENCE_B_ID', 6)))
+        add_to_brevo(body.email, body.name, 6)
         return {"status": "success"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# 2. SARMAD'S ENDPOINT (Cal.com Booking)
+# UPDATED: Sarmad's logic for Audit Booked
 @app.post('/api/audit-booked')
 async def audit_booked(request: Request):
     try:
         body_bytes = await request.body()
         signature = request.headers.get("X-Cal-Signature-256")
         
-        # Verify Security Signature
+        # Verify Webhook Signature
         if not verify_cal_signature(body_bytes, signature, os.getenv("CALCOM_WEBHOOK_SECRET")):
             raise HTTPException(status_code=401, detail="Invalid Signature")
         
@@ -91,40 +88,35 @@ async def audit_booked(request: Request):
         attendees = payload.get('attendees', [])
         
         if not attendees:
-            raise HTTPException(status_code=400, detail="No attendee data found")
+            raise HTTPException(status_code=400, detail="No attendee data")
 
-        # Extract name/email from Cal.com format
-        email = attendees[0].get('email')
-        name = attendees[0].get('name', 'Cal.com Lead')
+        # Extract values for Brevo
+        attendee_email = attendees[0].get('email')
+        attendee_name = attendees[0].get('name', 'Cal.com Lead')
 
-        # Save to Supabase (Capital L)
+        # 1. Save to Supabase (Capital L)
         supabase.table("Leads").insert({
-            "name": name, 
-            "email": email, 
+            "name": attendee_name, 
+            "email": attendee_email, 
             "source": "calendly",
             "sequence": "A", 
             "business": "Booked via Cal.com"
         }).execute()
         
-        # Add to Brevo List #7 (SEQUENCE_A_ID)
-        add_to_brevo(email, name, int(os.getenv('SEQUENCE_A_ID', 7)))
+        # 2. Add to Brevo List 7 (Sarmad's Request)
+        add_to_brevo(attendee_email, attendee_name, 7)
         
         return {"status": "success"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# 3. ABDULLAH'S ENDPOINT (Chatbot)
 @app.post('/api/chat/email')
 async def chat_email(body: ChatEmail):
     try:
-        # Table name with Capital C
         supabase.table("Chat_sessions").insert({
-            "email": body.email, 
-            "flow": body.flow,
-            "messages": [] 
+            "email": body.email, "flow": body.flow, "messages": []
         }).execute()
-        
-        add_to_brevo(body.email, body.name, int(os.getenv('SEQUENCE_B_ID', 6)))
+        add_to_brevo(body.email, body.name, 6)
         return {"status": "success"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
