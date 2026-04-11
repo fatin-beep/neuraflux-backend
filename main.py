@@ -7,27 +7,22 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, EmailStr
 from dotenv import load_dotenv
 from supabase import create_client, Client
-from sib_api_v3_sdk.rest import ApiException
 
 load_dotenv()
 app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=['*'], # Temporarily allow all for testing
+    allow_origins=['*'],
     allow_methods=['*'],
     allow_headers=['*'],
 )
 
-# Initialize clients inside a try block to catch connection errors
-try:
-    supabase: Client = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_KEY"))
-    
-    configuration = sib_api_v3_sdk.Configuration()
-    configuration.api_key['api-key'] = os.getenv("BREVO_API_KEY")
-    brevo_contacts_api = sib_api_v3_sdk.ContactsApi(sib_api_v3_sdk.ApiClient(configuration))
-except Exception as e:
-    print(f"Initialization Error: {e}")
+# Initialize clients
+supabase: Client = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_KEY"))
+configuration = sib_api_v3_sdk.Configuration()
+configuration.api_key['api-key'] = os.getenv("BREVO_API_KEY")
+brevo_contacts_api = sib_api_v3_sdk.ContactsApi(sib_api_v3_sdk.ApiClient(configuration))
 
 class ContactForm(BaseModel):
     name: str
@@ -39,6 +34,11 @@ class ChatEmail(BaseModel):
     email: EmailStr
     name: str = "Chat User"
     flow: str = "B"
+
+def verify_cal_signature(payload: bytes, signature: str, secret: str) -> bool:
+    if not secret or not signature: return False
+    expected = hmac.new(secret.encode(), payload, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, signature)
 
 def add_to_brevo(email: str, first_name: str, list_id: int):
     try:
@@ -56,34 +56,49 @@ def add_to_brevo(email: str, first_name: str, list_id: int):
 def health():
     return {'status': 'ok'}
 
+# 1. HAMZA'S ENDPOINT (Website Form)
 @app.post('/api/contact')
 async def contact_form(body: ContactForm):
     try:
-        # Saving to Supabase
         supabase.table("leads").insert({
-            "name": body.name,
-            "email": body.email,
-            "business": body.business,
-            "challenge": body.challenge,
-            "source": "form",
-            "sequence": "B"
+            "name": body.name, "email": body.email, "business": body.business,
+            "challenge": body.challenge, "source": "form", "sequence": "B"
         }).execute()
-        
-        # Triggering Brevo
         add_to_brevo(body.email, body.name, int(os.getenv('SEQUENCE_B_ID', 6)))
         return {"status": "success"}
     except Exception as e:
-        # This will now show the REAL error in Swagger
         raise HTTPException(status_code=500, detail=str(e))
 
+# 2. SARMAD'S ENDPOINT (Cal.com Booking)
+@app.post('/api/audit-booked')
+async def audit_booked(request: Request):
+    try:
+        body_bytes = await request.body()
+        signature = request.headers.get("X-Cal-Signature-256")
+        if not verify_cal_signature(body_bytes, signature, os.getenv("CALCOM_WEBHOOK_SECRET")):
+            raise HTTPException(status_code=401, detail="Invalid Signature")
+        
+        data = await request.json()
+        payload = data.get('payload', {})
+        attendees = payload.get('attendees', [])
+        email = attendees[0].get('email')
+        name = attendees[0].get('name', 'Cal.com Lead')
+
+        supabase.table("leads").insert({
+            "name": name, "email": email, "source": "calendly",
+            "sequence": "A", "business": "Booked via Cal.com"
+        }).execute()
+        
+        add_to_brevo(email, name, int(os.getenv('SEQUENCE_A_ID', 7)))
+        return {"status": "success"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# 3. ABDULLAH'S ENDPOINT (Chatbot)
 @app.post('/api/chat/email')
 async def chat_email(body: ChatEmail):
     try:
-        supabase.table("chat_sessions").insert({
-            "email": body.email,
-            "flow": body.flow
-        }).execute()
-        
+        supabase.table("chat_sessions").insert({"email": body.email, "flow": body.flow}).execute()
         add_to_brevo(body.email, body.name, int(os.getenv('SEQUENCE_B_ID', 6)))
         return {"status": "success"}
     except Exception as e:
