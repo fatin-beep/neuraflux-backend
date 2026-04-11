@@ -60,10 +60,16 @@ def health():
 @app.post('/api/contact')
 async def contact_form(body: ContactForm):
     try:
+        # Table name with Capital L
         supabase.table("Leads").insert({
-            "name": body.name, "email": body.email, "business": body.business,
-            "challenge": body.challenge, "source": "form", "sequence": "B"
+            "name": body.name, 
+            "email": body.email, 
+            "business": body.business,
+            "challenge": body.challenge, 
+            "source": "form", 
+            "sequence": "B"
         }).execute()
+        
         add_to_brevo(body.email, body.name, int(os.getenv('SEQUENCE_B_ID', 6)))
         return {"status": "success"}
     except Exception as e:
@@ -75,21 +81,34 @@ async def audit_booked(request: Request):
     try:
         body_bytes = await request.body()
         signature = request.headers.get("X-Cal-Signature-256")
+        
+        # Verify Security Signature
         if not verify_cal_signature(body_bytes, signature, os.getenv("CALCOM_WEBHOOK_SECRET")):
             raise HTTPException(status_code=401, detail="Invalid Signature")
         
         data = await request.json()
         payload = data.get('payload', {})
         attendees = payload.get('attendees', [])
+        
+        if not attendees:
+            raise HTTPException(status_code=400, detail="No attendee data found")
+
+        # Extract name/email from Cal.com format
         email = attendees[0].get('email')
         name = attendees[0].get('name', 'Cal.com Lead')
 
+        # Save to Supabase (Capital L)
         supabase.table("Leads").insert({
-            "name": name, "email": email, "source": "calendly",
-            "sequence": "A", "business": "Booked via Cal.com"
+            "name": name, 
+            "email": email, 
+            "source": "calendly",
+            "sequence": "A", 
+            "business": "Booked via Cal.com"
         }).execute()
         
+        # Add to Brevo List #7 (SEQUENCE_A_ID)
         add_to_brevo(email, name, int(os.getenv('SEQUENCE_A_ID', 7)))
+        
         return {"status": "success"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -98,7 +117,13 @@ async def audit_booked(request: Request):
 @app.post('/api/chat/email')
 async def chat_email(body: ChatEmail):
     try:
-        supabase.table("Chat_sessions").insert({"email": body.email, "flow": body.flow}).execute()
+        # Table name with Capital C
+        supabase.table("Chat_sessions").insert({
+            "email": body.email, 
+            "flow": body.flow,
+            "messages": [] 
+        }).execute()
+        
         add_to_brevo(body.email, body.name, int(os.getenv('SEQUENCE_B_ID', 6)))
         return {"status": "success"}
     except Exception as e:
