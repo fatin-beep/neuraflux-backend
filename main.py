@@ -12,19 +12,26 @@ from supabase import create_client, Client
 load_dotenv()
 app = FastAPI()
 
+# 1. Home Route to verify the API is online
+@app.get('/')
+def home():
+    return {'message': 'NeuraFlux API is Online', 'docs': '/docs'}
+
+# 2. [span_2](start_span)CORS - Only allow neuraflux.io and local testing[span_2](end_span)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=['*'],
-    allow_methods=['*'],
+    allow_origins=['https://neuraflux.io', 'http://localhost:3000'],
+    allow_methods=['GET', 'POST'],
     allow_headers=['*'],
 )
 
-# Initialize clients
+# 3. Initialize Clients
 supabase: Client = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_KEY"))
 configuration = sib_api_v3_sdk.Configuration()
 configuration.api_key['api-key'] = os.getenv("BREVO_API_KEY")
 api_instance = sib_api_v3_sdk.ContactsApi(sib_api_v3_sdk.ApiClient(configuration))
 
+# 4. Data Models
 class ContactForm(BaseModel):
     name: str
     email: EmailStr
@@ -33,28 +40,29 @@ class ContactForm(BaseModel):
 
 class ChatEmail(BaseModel):
     email: EmailStr
-    name: str = "Chat User"
+    name: str = "Chat Guest"
     flow: str = "B"
 
+# 5. Helpers
 def verify_cal_signature(payload: bytes, signature: str, secret: str) -> bool:
     if not secret or not signature: return False
     expected = hmac.new(secret.encode(), payload, hashlib.sha256).hexdigest()
     return hmac.compare_digest(expected, signature)
 
-# Re-written to match Sarmad's exact SDK requirement
 def add_to_brevo(email: str, first_name: str, list_id: int):
     try:
+        # [span_3](start_span)Create or update contact with FIRSTNAME attribute[span_3](end_span)
         create_contact = sib_api_v3_sdk.CreateContact(
             email=email,
-            attributes={"FIRSTNAME": first_name},
+            attributes={'FIRSTNAME': first_name},
             list_ids=[list_id],
             update_enabled=True
         )
         api_instance.create_contact(create_contact)
     except ApiException as e:
         print(f"Brevo API Error: {e}")
-    except Exception as e:
-        print(f"General Error: {e}")
+
+# 6. Endpoints
 
 @app.get('/api/health')
 def health():
@@ -63,24 +71,25 @@ def health():
 @app.post('/api/contact')
 async def contact_form(body: ContactForm):
     try:
+        # [span_4](start_span)Save to Supabase Leads table[span_4](end_span)
         supabase.table("Leads").insert({
             "name": body.name, "email": body.email, "business": body.business,
             "challenge": body.challenge, "source": "form", "sequence": "B"
         }).execute()
+        # [span_5](start_span)Add to Brevo List #6 (Email Only)[span_5](end_span)
         add_to_brevo(body.email, body.name, 6)
         return {"status": "success"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        raise HTTPException(status_code=500, detail="Internal Server Error")
 
-# UPDATED: Sarmad's logic for Audit Booked
 @app.post('/api/audit-booked')
 async def audit_booked(request: Request):
     try:
         body_bytes = await request.body()
         signature = request.headers.get("X-Cal-Signature-256")
         
-        # Verify Webhook Signature
-        if not verify_cal_signature(body_bytes, signature, os.getenv("CALCOM_WEBHOOK_SECRET")):
+        # [span_6](start_span)Verify Cal.com Signature[span_6](end_span)
+        if not verify_cal_signature(body_bytes, signature, os.getenv("CAL_WEBHOOK_SECRET")):
             raise HTTPException(status_code=401, detail="Invalid Signature")
         
         data = await request.json()
@@ -90,33 +99,32 @@ async def audit_booked(request: Request):
         if not attendees:
             raise HTTPException(status_code=400, detail="No attendee data")
 
-        # Extract values for Brevo
+        # [span_7](start_span)Extract name and email from payload.attendees[0][span_7](end_span)
         attendee_email = attendees[0].get('email')
         attendee_name = attendees[0].get('name', 'Cal.com Lead')
 
-        # 1. Save to Supabase (Capital L)
+        # [span_8](start_span)Save to Supabase Leads table[span_8](end_span)
         supabase.table("Leads").insert({
-            "name": attendee_name, 
-            "email": attendee_email, 
-            "source": "calendly",
-            "sequence": "A", 
+            "name": attendee_name, "email": attendee_email, 
+            "source": 'calendly', "sequence": 'A',
             "business": "Booked via Cal.com"
         }).execute()
         
-        # 2. Add to Brevo List 7 (Sarmad's Request)
+        # [span_9](start_span)Add to Brevo List #7 (Booked Audit)[span_9](end_span)
         add_to_brevo(attendee_email, attendee_name, 7)
-        
         return {"status": "success"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        raise HTTPException(status_code=500, detail="Internal Server Error")
 
 @app.post('/api/chat/email')
 async def chat_email(body: ChatEmail):
     try:
+        # [span_10](start_span)Save to Chat_sessions and fix empty messages list[span_10](end_span)
         supabase.table("Chat_sessions").insert({
             "email": body.email, "flow": body.flow, "messages": []
         }).execute()
+        # [span_11](start_span)Add to Brevo List #6 (Email Only)[span_11](end_span)
         add_to_brevo(body.email, body.name, 6)
         return {"status": "success"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        raise HTTPException(status_code=500, detail="Internal Server Error")
