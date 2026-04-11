@@ -60,7 +60,7 @@ def health():
 @app.post('/api/contact')
 async def contact_form(body: ContactForm):
     try:
-        supabase.table("leads").insert({
+        supabase.table("Leads").insert({
             "name": body.name, "email": body.email, "business": body.business,
             "challenge": body.challenge, "source": "form", "sequence": "B"
         }).execute()
@@ -84,7 +84,7 @@ async def audit_booked(request: Request):
         email = attendees[0].get('email')
         name = attendees[0].get('name', 'Cal.com Lead')
 
-        supabase.table("leads").insert({
+        supabase.table("Leads").insert({
             "name": name, "email": email, "source": "calendly",
             "sequence": "A", "business": "Booked via Cal.com"
         }).execute()
@@ -98,7 +98,7 @@ async def audit_booked(request: Request):
 @app.post('/api/chat/email')
 async def chat_email(body: ChatEmail):
     try:
-        supabase.table("chat_sessions").insert({"email": body.email, "flow": body.flow}).execute()
+        supabase.table("Chat_sessions").insert({"email": body.email, "flow": body.flow}).execute()
         add_to_brevo(body.email, body.name, int(os.getenv('SEQUENCE_B_ID', 6)))
         return {"status": "success"}
     except Exception as e:
