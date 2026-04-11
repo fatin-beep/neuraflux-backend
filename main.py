@@ -12,12 +12,12 @@ from supabase import create_client, Client
 load_dotenv()
 app = FastAPI()
 
-# 1. Home Route to verify the API is online
+# 1. Home Route to fix the "Detail Not Found" error
 @app.get('/')
 def home():
     return {'message': 'NeuraFlux API is Online', 'docs': '/docs'}
 
-# 2. [span_2](start_span)CORS - Only allow neuraflux.io and local testing[span_2](end_span)
+# 2. [span_3](start_span)CORS Rules - Only allow NeuraFlux domains[span_3](end_span)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=['https://neuraflux.io', 'http://localhost:3000'],
@@ -25,13 +25,13 @@ app.add_middleware(
     allow_headers=['*'],
 )
 
-# 3. Initialize Clients
+# 3. [span_4](start_span)[span_5](start_span)Initialize Supabase and Brevo Clients[span_4](end_span)[span_5](end_span)
 supabase: Client = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_KEY"))
 configuration = sib_api_v3_sdk.Configuration()
 configuration.api_key['api-key'] = os.getenv("BREVO_API_KEY")
 api_instance = sib_api_v3_sdk.ContactsApi(sib_api_v3_sdk.ApiClient(configuration))
 
-# 4. Data Models
+# 4. Data Models for Validation
 class ContactForm(BaseModel):
     name: str
     email: EmailStr
@@ -51,7 +51,7 @@ def verify_cal_signature(payload: bytes, signature: str, secret: str) -> bool:
 
 def add_to_brevo(email: str, first_name: str, list_id: int):
     try:
-        # [span_3](start_span)Create or update contact with FIRSTNAME attribute[span_3](end_span)
+        # [span_6](start_span)Exact code required by Sarmad using FIRSTNAME attribute[span_6](end_span)
         create_contact = sib_api_v3_sdk.CreateContact(
             email=email,
             attributes={'FIRSTNAME': first_name},
@@ -62,7 +62,7 @@ def add_to_brevo(email: str, first_name: str, list_id: int):
     except ApiException as e:
         print(f"Brevo API Error: {e}")
 
-# 6. Endpoints
+# 6. [span_7](start_span)Endpoints[span_7](end_span)
 
 @app.get('/api/health')
 def health():
@@ -71,12 +71,12 @@ def health():
 @app.post('/api/contact')
 async def contact_form(body: ContactForm):
     try:
-        # [span_4](start_span)Save to Supabase Leads table[span_4](end_span)
+        # [span_8](start_span)Save to Leads table[span_8](end_span)
         supabase.table("Leads").insert({
             "name": body.name, "email": body.email, "business": body.business,
             "challenge": body.challenge, "source": "form", "sequence": "B"
         }).execute()
-        # [span_5](start_span)Add to Brevo List #6 (Email Only)[span_5](end_span)
+        # [span_9](start_span)Trigger Sequence B (List #6)[span_9](end_span)
         add_to_brevo(body.email, body.name, 6)
         return {"status": "success"}
     except Exception:
@@ -88,7 +88,7 @@ async def audit_booked(request: Request):
         body_bytes = await request.body()
         signature = request.headers.get("X-Cal-Signature-256")
         
-        # [span_6](start_span)Verify Cal.com Signature[span_6](end_span)
+        # [span_10](start_span)Security validation[span_10](end_span)
         if not verify_cal_signature(body_bytes, signature, os.getenv("CAL_WEBHOOK_SECRET")):
             raise HTTPException(status_code=401, detail="Invalid Signature")
         
@@ -99,18 +99,18 @@ async def audit_booked(request: Request):
         if not attendees:
             raise HTTPException(status_code=400, detail="No attendee data")
 
-        # [span_7](start_span)Extract name and email from payload.attendees[0][span_7](end_span)
+        # [span_11](start_span)Extract name/email exactly as Sarmad specified[span_11](end_span)
         attendee_email = attendees[0].get('email')
         attendee_name = attendees[0].get('name', 'Cal.com Lead')
 
-        # [span_8](start_span)Save to Supabase Leads table[span_8](end_span)
+        # 1. Save to Supabase Leads table
         supabase.table("Leads").insert({
             "name": attendee_name, "email": attendee_email, 
             "source": 'calendly', "sequence": 'A',
             "business": "Booked via Cal.com"
         }).execute()
         
-        # [span_9](start_span)Add to Brevo List #7 (Booked Audit)[span_9](end_span)
+        # 2. [span_12](start_span)[span_13](start_span)Add to Brevo List #7 to trigger Sequence A[span_12](end_span)[span_13](end_span)
         add_to_brevo(attendee_email, attendee_name, 7)
         return {"status": "success"}
     except Exception:
@@ -119,11 +119,11 @@ async def audit_booked(request: Request):
 @app.post('/api/chat/email')
 async def chat_email(body: ChatEmail):
     try:
-        # [span_10](start_span)Save to Chat_sessions and fix empty messages list[span_10](end_span)
+        # [span_14](start_span)Save to Chat_sessions and fix empty messages list constraint[span_14](end_span)
         supabase.table("Chat_sessions").insert({
             "email": body.email, "flow": body.flow, "messages": []
         }).execute()
-        # [span_11](start_span)Add to Brevo List #6 (Email Only)[span_11](end_span)
+        # [span_15](start_span)Trigger Sequence B (List #6)[span_15](end_span)
         add_to_brevo(body.email, body.name, 6)
         return {"status": "success"}
     except Exception:
