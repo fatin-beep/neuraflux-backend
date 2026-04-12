@@ -12,7 +12,7 @@ load_dotenv()
 
 app = FastAPI()
 
-# --- VALIDATE ENV (CRITICAL) ---
+# --- VALIDATE ENV ---
 REQUIRED_ENV = ["BREVO_API_KEY", "SUPABASE_URL", "SUPABASE_KEY"]
 
 for var in REQUIRED_ENV:
@@ -68,12 +68,13 @@ def add_to_brevo(email: str, first_name: str, list_id: int):
         print(f"❌ Brevo Contact Error: {e}")
 
 
+# ✅ USER EMAIL
 def send_email(to_email: str, to_name: str):
     try:
         email = sib_api_v3_sdk.SendSmtpEmail(
             to=[{"email": to_email, "name": to_name}],
             sender={
-                "email": "contact@neuraflux.io",  # must be verified
+                "email": "contact@neuraflux.io",
                 "name": "NeuraFlux"
             },
             subject="Your Request is Confirmed 🚀",
@@ -87,12 +88,42 @@ def send_email(to_email: str, to_name: str):
         )
 
         response = email_api.send_transac_email(email)
-        print(f"✅ Email sent to {to_email}")
+        print(f"✅ User email sent to {to_email}")
         return response
 
     except Exception as e:
         print(f"❌ Email Error: {e}")
         raise Exception(f"Email failed: {e}")
+
+
+# ✅ ADMIN EMAIL (NEW)
+def send_admin_email(name: str, email: str, business: str = "", challenge: str = ""):
+    try:
+        email_data = sib_api_v3_sdk.SendSmtpEmail(
+            to=[{
+                "email": "your@email.com",  # 🔥 CHANGE THIS
+                "name": "Admin"
+            }],
+            sender={
+                "email": "contact@neuraflux.io",
+                "name": "NeuraFlux"
+            },
+            subject="🚨 New Lead Received",
+            html_content=f"""
+                <h2>New Lead Submitted</h2>
+                <p><strong>Name:</strong> {name}</p>
+                <p><strong>Email:</strong> {email}</p>
+                <p><strong>Business:</strong> {business}</p>
+                <p><strong>Challenge:</strong> {challenge}</p>
+            """
+        )
+
+        response = email_api.send_transac_email(email_data)
+        print("✅ Admin email sent")
+        return response
+
+    except Exception as e:
+        print(f"❌ Admin Email Error: {e}")
 
 
 # --- MIDDLEWARE ---
@@ -110,6 +141,7 @@ def home():
     return {'message': 'NeuraFlux API Online', 'docs': '/docs'}
 
 
+# ✅ CONTACT FORM
 @app.post('/api/contact')
 async def contact_form(body: ContactForm):
     try:
@@ -127,11 +159,12 @@ async def contact_form(body: ContactForm):
 
         print("✅ Saved to Supabase")
 
-        # Add to Brevo
+        # Brevo
         add_to_brevo(body.email, body.name, 6)
 
-        # Send Email
+        # Emails
         send_email(body.email, body.name)
+        send_admin_email(body.name, body.email, body.business, body.challenge)
 
         return {"status": "success"}
 
@@ -140,6 +173,7 @@ async def contact_form(body: ContactForm):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ✅ AUDIT BOOKED
 @app.post('/api/audit-booked')
 async def audit_booked(body: AuditPayload):
     try:
@@ -154,7 +188,6 @@ async def audit_booked(body: AuditPayload):
         email = attendees[0].get('email')
         name = attendees[0].get('name', 'Audit Client')
 
-        # Save to DB
         supabase.table("Leads").insert({
             "name": name,
             "email": email,
@@ -165,11 +198,11 @@ async def audit_booked(body: AuditPayload):
 
         print("✅ Saved audit lead")
 
-        # Add to Brevo
         add_to_brevo(email, name, 7)
 
-        # Send Email
+        # Emails
         send_email(email, name)
+        send_admin_email(name, email)
 
         return {"status": "success"}
 
@@ -178,12 +211,12 @@ async def audit_booked(body: AuditPayload):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ✅ CHAT EMAIL
 @app.post('/api/chat/email')
 async def chat_email(body: ChatEmail):
     try:
         print("💬 Chat API HIT")
 
-        # Save session
         supabase.table("Chat_sessions").insert({
             "email": body.email,
             "flow": body.flow,
@@ -192,11 +225,11 @@ async def chat_email(body: ChatEmail):
 
         print("✅ Chat saved")
 
-        # Add to Brevo
         add_to_brevo(body.email, body.name, 6)
 
-        # Send Email
+        # Emails
         send_email(body.email, body.name)
+        send_admin_email(body.name, body.email)
 
         return {"status": "success"}
 
