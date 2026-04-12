@@ -9,8 +9,7 @@ from supabase import create_client, Client
 load_dotenv()
 app = FastAPI()
 
-# --- DATA MODELS (Ensures Swagger shows the Request Body) ---
-
+# --- MODELS ---
 class ContactForm(BaseModel):
     name: str
     email: EmailStr
@@ -23,20 +22,17 @@ class ChatEmail(BaseModel):
     flow: str = "B"
 
 class AuditPayload(BaseModel):
-    payload: dict  # This defines the nested Cal.com structure
+    payload: dict
 
-# --- INITIALIZATION ---
-
+# --- CLIENTS ---
 supabase: Client = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_KEY"))
 configuration = sib_api_v3_sdk.Configuration()
 configuration.api_key['api-key'] = os.getenv("BREVO_API_KEY")
 api_instance = sib_api_v3_sdk.ContactsApi(sib_api_v3_sdk.ApiClient(configuration))
 
 # --- HELPERS ---
-
 def add_to_brevo(email: str, first_name: str, list_id: int):
     try:
-        # Uses FIRSTNAME attribute as requested by Sarmad
         create_contact = sib_api_v3_sdk.CreateContact(
             email=email,
             attributes={'FIRSTNAME': first_name},
@@ -44,19 +40,14 @@ def add_to_brevo(email: str, first_name: str, list_id: int):
             update_enabled=True
         )
         api_instance.create_contact(create_contact)
-        print(f"Success: Added {email} to Brevo List {list_id}")
+        print(f"Brevo Success: {email} added to list {list_id}")
     except Exception as e:
-        print(f"Brevo API Error: {e}")
+        print(f"Brevo Error: {e}")
 
 # --- ENDPOINTS ---
-
 @app.get('/')
 def home():
-    return {'message': 'NeuraFlux API is Online', 'docs': '/docs'}
-
-@app.get('/api/health')
-def health():
-    return {'status': 'ok'}
+    return {'message': 'NeuraFlux API Online', 'docs': '/docs'}
 
 app.add_middleware(
     CORSMiddleware,
@@ -80,28 +71,24 @@ async def contact_form(body: ContactForm):
 @app.post('/api/audit-booked')
 async def audit_booked(body: AuditPayload):
     try:
-        # Extract data from the nested payload
         data = body.payload
         attendees = data.get('attendees', [])
-        
         if not attendees:
-            return {"status": "error", "message": "No attendee data found"}
+            return {"status": "error", "message": "No attendee data"}
 
         email = attendees[0].get('email')
         name = attendees[0].get('name', 'Cal.com Lead')
 
-        # 1. Save to Supabase (Table: Leads)
+        # Save to Leads table and trigger Sequence A (List 7)
         supabase.table("Leads").insert({
             "name": name, "email": email, "source": "calendly", 
             "sequence": "A", "business": "Booked Audit"
         }).execute()
 
-        # 2. Add to Brevo List #7 (Sequence A)
         add_to_brevo(email, name, 7)
-
         return {"status": "success"}
     except Exception as e:
-        print(f"Execution Error: {e}")
+        print(f"Crash Details: {e}")
         raise HTTPException(status_code=500, detail="Internal Server Error")
 
 @app.post('/api/chat/email')
