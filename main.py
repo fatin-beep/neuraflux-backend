@@ -7,10 +7,17 @@ from pydantic import BaseModel, EmailStr
 from dotenv import load_dotenv
 from supabase import create_client, Client
 
-# Load env
+# --- LOAD ENV ---
 load_dotenv()
 
 app = FastAPI()
+
+# --- VALIDATE ENV (CRITICAL) ---
+REQUIRED_ENV = ["BREVO_API_KEY", "SUPABASE_URL", "SUPABASE_KEY"]
+
+for var in REQUIRED_ENV:
+    if not os.getenv(var):
+        raise Exception(f"❌ Missing ENV variable: {var}")
 
 # --- MODELS ---
 class ContactForm(BaseModel):
@@ -66,7 +73,7 @@ def send_email(to_email: str, to_name: str):
         email = sib_api_v3_sdk.SendSmtpEmail(
             to=[{"email": to_email, "name": to_name}],
             sender={
-                "email": "contact@neuraflux.io",  # MUST be verified in Brevo
+                "email": "contact@neuraflux.io",  # must be verified
                 "name": "NeuraFlux"
             },
             subject="Your Request is Confirmed 🚀",
@@ -85,6 +92,7 @@ def send_email(to_email: str, to_name: str):
 
     except Exception as e:
         print(f"❌ Email Error: {e}")
+        raise Exception(f"Email failed: {e}")
 
 
 # --- MIDDLEWARE ---
@@ -105,6 +113,8 @@ def home():
 @app.post('/api/contact')
 async def contact_form(body: ContactForm):
     try:
+        print("📩 Contact API HIT")
+
         # Save to DB
         supabase.table("Leads").insert({
             "name": body.name,
@@ -115,22 +125,26 @@ async def contact_form(body: ContactForm):
             "sequence": "B"
         }).execute()
 
-        # Add to Brevo list
+        print("✅ Saved to Supabase")
+
+        # Add to Brevo
         add_to_brevo(body.email, body.name, 6)
 
-        # ✅ SEND EMAIL
+        # Send Email
         send_email(body.email, body.name)
 
         return {"status": "success"}
 
     except Exception as e:
-        print(f"❌ Error: {e}")
-        raise HTTPException(status_code=500, detail="Internal Server Error")
+        print(f"🔥 ERROR in /api/contact: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post('/api/audit-booked')
 async def audit_booked(body: AuditPayload):
     try:
+        print("📅 Audit API HIT")
+
         data = body.payload
         attendees = data.get('attendees', [])
 
@@ -149,22 +163,26 @@ async def audit_booked(body: AuditPayload):
             "business": "Booked Audit"
         }).execute()
 
+        print("✅ Saved audit lead")
+
         # Add to Brevo
         add_to_brevo(email, name, 7)
 
-        # ✅ SEND EMAIL
+        # Send Email
         send_email(email, name)
 
         return {"status": "success"}
 
     except Exception as e:
-        print(f"❌ Crash: {e}")
-        raise HTTPException(status_code=500, detail="Internal Server Error")
+        print(f"🔥 ERROR in /api/audit-booked: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post('/api/chat/email')
 async def chat_email(body: ChatEmail):
     try:
+        print("💬 Chat API HIT")
+
         # Save session
         supabase.table("Chat_sessions").insert({
             "email": body.email,
@@ -172,14 +190,16 @@ async def chat_email(body: ChatEmail):
             "messages": []
         }).execute()
 
+        print("✅ Chat saved")
+
         # Add to Brevo
         add_to_brevo(body.email, body.name, 6)
 
-        # ✅ SEND EMAIL
+        # Send Email
         send_email(body.email, body.name)
 
         return {"status": "success"}
 
     except Exception as e:
-        print(f"❌ Error: {e}")
-        raise HTTPException(status_code=500, detail="Internal Server Error")
+        print(f"🔥 ERROR in /api/chat/email: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
