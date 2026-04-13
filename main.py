@@ -129,43 +129,73 @@ async def audit_booked(body: AuditPayload):
     """
     Triggered by Cal.com webhook when someone books a Free AI Growth Audit.
     Saves to Supabase and adds to Brevo Booked Audit list (ID 7).
-    Brevo automatically sends Sequence A emails (NF-A1 immediately, NF-A2 after 1 day).
+    Passes calendar URL, reschedule URL, and start time as contact attributes.
+    Brevo automation sends NF-A1 email automatically using these attributes.
     """
     try:
-        print("Audit booking webhook received")
+        print('Audit booking webhook received')
 
         data = body.payload
         attendees = data.get('attendees', [])
 
         if not attendees:
-            return {"status": "error", "message": "No attendee data"}
+            return {'status': 'error', 'message': 'No attendee data'}
 
         email = attendees[0].get('email')
         name = attendees[0].get('name', 'Guest')
         first_name = name.split()[0]
 
         if not email:
-            return {"status": "error", "message": "No email in payload"}
+            return {'status': 'error', 'message': 'No email in payload'}
+
+        # Extract booking details from Cal.com payload
+        start_time = data.get('startTime', '')
+        booking_uid = data.get('uid', '')
+        video_url = data.get('metadata', {}).get('videoCallUrl', '')
+        
+        if not video_url:
+            video_url = data.get('location', 'https://app.cal.com/video')
+
+        # Build reschedule URL from booking UID
+        reschedule_url = f'https://cal.com/reschedule/{booking_uid}'
 
         # Save to Supabase
-        supabase.table("Leads").insert({
-            "name": name,
-            "email": email,
-            "source": "calendly",
-            "sequence": "A",
-            "business": "Booked Audit"
+        supabase.table('Leads').insert({
+            'name': name,
+            'email': email,
+            'source': 'calendly',
+            'sequence': 'A',
+            'business': 'Booked Audit'
         }).execute()
 
-        print(f"Saved audit lead: {email}")
+        print(f'Saved audit lead: {email}')
 
-        # Add to Brevo Booked Audit list — triggers Sequence A automatically
-        add_to_brevo(email, first_name, 7)
+        # Add to Brevo Booked Audit list with all attributes
+        # This triggers Sequence A automatically
+        # Brevo uses these attributes to fill the email template buttons
+        try:
+            contact = sib_api_v3_sdk.CreateContact(
+                email=email,
+                attributes={
+                    'FIRSTNAME': first_name,
+                    'CALENDAR_URL': video_url,
+                    'RESCHEDULE_URL': reschedule_url,
+                    'START_TIME': start_time
+                },
+                list_ids=[7],
+                update_enabled=True
+            )
+            contact_api.create_contact(contact)
+            print(f'Contact added to Brevo list 7: {email}')
+        except Exception as e:
+            print(f'Brevo error: {e}')
+            raise Exception(f'Brevo failed: {e}')
 
-        return {"status": "success"}
+        return {'status': 'success'}
 
     except Exception as e:
-        print(f"Error in /api/audit-booked: {e}")
-        raise HTTPException(status_code=500, detail="Something went wrong")
+        print(f'Error in /api/audit-booked: {e}')
+        raise HTTPException(status_code=500, detail='Something went wrong')
 
 
 @app.post('/api/chat/email')
