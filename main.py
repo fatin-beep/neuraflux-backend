@@ -17,7 +17,7 @@ REQUIRED_ENV = ["BREVO_API_KEY", "SUPABASE_URL", "SUPABASE_KEY"]
 
 for var in REQUIRED_ENV:
     if not os.getenv(var):
-        raise Exception(f"❌ Missing ENV variable: {var}")
+        raise Exception(f"Missing ENV variable: {var}")
 
 # --- MODELS ---
 class ContactForm(BaseModel):
@@ -48,84 +48,6 @@ contact_api = sib_api_v3_sdk.ContactsApi(
     sib_api_v3_sdk.ApiClient(configuration)
 )
 
-email_api = sib_api_v3_sdk.TransactionalEmailsApi(
-    sib_api_v3_sdk.ApiClient(configuration)
-)
-
-# --- HELPERS ---
-
-def add_to_brevo(email: str, first_name: str, list_id: int):
-    try:
-        contact = sib_api_v3_sdk.CreateContact(
-            email=email,
-            attributes={'FIRSTNAME': first_name},
-            list_ids=[list_id],
-            update_enabled=True
-        )
-        contact_api.create_contact(contact)
-        print(f"✅ Contact added: {email} → list {list_id}")
-    except Exception as e:
-        print(f"❌ Brevo Contact Error: {e}")
-
-
-# ✅ USER EMAIL
-def send_email(to_email: str, to_name: str):
-    try:
-        email = sib_api_v3_sdk.SendSmtpEmail(
-            to=[{"email": to_email, "name": to_name}],
-            sender={
-                "email": "contact@neuraflux.io",
-                "name": "NeuraFlux"
-            },
-            subject="Your Request is Confirmed 🚀",
-            html_content=f"""
-                <h2>Hi {to_name},</h2>
-                <p>Thanks for reaching out! We've received your request.</p>
-                <p>Our team will contact you shortly.</p>
-                <br>
-                <p>— NeuraFlux Team</p>
-            """
-        )
-
-        response = email_api.send_transac_email(email)
-        print(f"✅ User email sent to {to_email}")
-        return response
-
-    except Exception as e:
-        print(f"❌ Email Error: {e}")
-        raise Exception(f"Email failed: {e}")
-
-
-# ✅ ADMIN EMAIL (NEW)
-def send_admin_email(name: str, email: str, business: str = "", challenge: str = ""):
-    try:
-        email_data = sib_api_v3_sdk.SendSmtpEmail(
-            to=[{
-                "email": "your@email.com",  # 🔥 CHANGE THIS
-                "name": "Admin"
-            }],
-            sender={
-                "email": "contact@neuraflux.io",
-                "name": "NeuraFlux"
-            },
-            subject="🚨 New Lead Received",
-            html_content=f"""
-                <h2>New Lead Submitted</h2>
-                <p><strong>Name:</strong> {name}</p>
-                <p><strong>Email:</strong> {email}</p>
-                <p><strong>Business:</strong> {business}</p>
-                <p><strong>Challenge:</strong> {challenge}</p>
-            """
-        )
-
-        response = email_api.send_transac_email(email_data)
-        print("✅ Admin email sent")
-        return response
-
-    except Exception as e:
-        print(f"❌ Admin Email Error: {e}")
-
-
 # --- MIDDLEWARE ---
 app.add_middleware(
     CORSMiddleware,
@@ -134,6 +56,30 @@ app.add_middleware(
     allow_headers=['*'],
 )
 
+# --- HELPER ---
+
+def add_to_brevo(email: str, first_name: str, list_id: int):
+    """
+    Adds a contact to a Brevo list.
+    List ID 7 = Booked Audit  → triggers Sequence A (NF-A1, NF-A2)
+    List ID 6 = Email Only    → triggers Sequence B (NF-B1 through NF-B5)
+    Brevo automation handles all email sending automatically.
+    Do NOT send emails manually — the automation does it.
+    """
+    try:
+        contact = sib_api_v3_sdk.CreateContact(
+            email=email,
+            attributes={'FIRSTNAME': first_name},
+            list_ids=[list_id],
+            update_enabled=True
+        )
+        contact_api.create_contact(contact)
+        print(f"Contact added: {email} to list {list_id}")
+    except Exception as e:
+        print(f"Brevo error: {e}")
+        raise Exception(f"Brevo failed: {e}")
+
+
 # --- ROUTES ---
 
 @app.get('/')
@@ -141,13 +87,22 @@ def home():
     return {'message': 'NeuraFlux API Online', 'docs': '/docs'}
 
 
-# ✅ CONTACT FORM
+@app.get('/api/health')
+def health():
+    return {'status': 'ok'}
+
+
 @app.post('/api/contact')
 async def contact_form(body: ContactForm):
+    """
+    Triggered when visitor submits the contact form on the website.
+    Saves to Supabase and adds to Brevo Email Only list (ID 6).
+    Brevo automatically sends Sequence B emails.
+    """
     try:
-        print("📩 Contact API HIT")
+        print("Contact form received")
 
-        # Save to DB
+        # Save to Supabase
         supabase.table("Leads").insert({
             "name": body.name,
             "email": body.email,
@@ -157,27 +112,27 @@ async def contact_form(body: ContactForm):
             "sequence": "B"
         }).execute()
 
-        print("✅ Saved to Supabase")
+        print("Saved to Supabase")
 
-        # Brevo
-        add_to_brevo(body.email, body.name, 6)
-
-        # Emails
-        send_email(body.email, body.name)
-        send_admin_email(body.name, body.email, body.business, body.challenge)
+        # Add to Brevo Email Only list — triggers Sequence B automatically
+        add_to_brevo(body.email, body.name.split()[0], 6)
 
         return {"status": "success"}
 
     except Exception as e:
-        print(f"🔥 ERROR in /api/contact: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"Error in /api/contact: {e}")
+        raise HTTPException(status_code=500, detail="Something went wrong")
 
 
-# ✅ AUDIT BOOKED
 @app.post('/api/audit-booked')
 async def audit_booked(body: AuditPayload):
+    """
+    Triggered by Cal.com webhook when someone books a Free AI Growth Audit.
+    Saves to Supabase and adds to Brevo Booked Audit list (ID 7).
+    Brevo automatically sends Sequence A emails (NF-A1 immediately, NF-A2 after 1 day).
+    """
     try:
-        print("📅 Audit API HIT")
+        print("Audit booking webhook received")
 
         data = body.payload
         attendees = data.get('attendees', [])
@@ -186,53 +141,57 @@ async def audit_booked(body: AuditPayload):
             return {"status": "error", "message": "No attendee data"}
 
         email = attendees[0].get('email')
-        name = attendees[0].get('name', 'Audit Client')
+        name = attendees[0].get('name', 'Guest')
+        first_name = name.split()[0]
 
+        if not email:
+            return {"status": "error", "message": "No email in payload"}
+
+        # Save to Supabase
         supabase.table("Leads").insert({
             "name": name,
             "email": email,
-            "source": "audit",
+            "source": "calendly",
             "sequence": "A",
             "business": "Booked Audit"
         }).execute()
 
-        print("✅ Saved audit lead")
+        print(f"Saved audit lead: {email}")
 
-        add_to_brevo(email, name, 7)
-
-        # Emails
-        send_email(email, name)
-        send_admin_email(name, email)
+        # Add to Brevo Booked Audit list — triggers Sequence A automatically
+        add_to_brevo(email, first_name, 7)
 
         return {"status": "success"}
 
     except Exception as e:
-        print(f"🔥 ERROR in /api/audit-booked: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"Error in /api/audit-booked: {e}")
+        raise HTTPException(status_code=500, detail="Something went wrong")
 
 
-# ✅ CHAT EMAIL
 @app.post('/api/chat/email')
 async def chat_email(body: ChatEmail):
+    """
+    Triggered when the chatbot captures a visitor's email.
+    Saves to Supabase and adds to Brevo Email Only list (ID 6).
+    Brevo automatically sends Sequence B emails.
+    """
     try:
-        print("💬 Chat API HIT")
+        print("Chatbot email capture received")
 
+        # Save to Supabase
         supabase.table("Chat_sessions").insert({
             "email": body.email,
             "flow": body.flow,
             "messages": []
         }).execute()
 
-        print("✅ Chat saved")
+        print(f"Chat session saved: {body.email}")
 
-        add_to_brevo(body.email, body.name, 6)
-
-        # Emails
-        send_email(body.email, body.name)
-        send_admin_email(body.name, body.email)
+        # Add to Brevo Email Only list — triggers Sequence B automatically
+        add_to_brevo(body.email, body.name.split()[0], 6)
 
         return {"status": "success"}
 
     except Exception as e:
-        print(f"🔥 ERROR in /api/chat/email: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"Error in /api/chat/email: {e}")
+        raise HTTPException(status_code=500, detail="Something went wrong")
