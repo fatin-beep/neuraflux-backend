@@ -58,18 +58,20 @@ app.add_middleware(
 
 # --- HELPER ---
 
-def add_to_brevo(email: str, first_name: str, list_id: int):
+def add_to_brevo(email: str, first_name: str, list_id: int, attributes: dict = None):
     """
     Adds a contact to a Brevo list.
-    List ID 7 = Booked Audit  → triggers Sequence A (NF-A1, NF-A2)
-    List ID 6 = Email Only    → triggers Sequence B (NF-B1 through NF-B5)
-    Brevo automation handles all email sending automatically.
-    Do NOT send emails manually — the automation does it.
+    Attributes support dynamic fields like CALENDAR_URL and RESCHEDULE_URL.
     """
     try:
+        if attributes is None:
+            attributes = {}
+        
+        attributes['FIRSTNAME'] = first_name
+
         contact = sib_api_v3_sdk.CreateContact(
             email=email,
-            attributes={'FIRSTNAME': first_name},
+            attributes=attributes,
             list_ids=[list_id],
             update_enabled=True
         )
@@ -87,22 +89,9 @@ def home():
     return {'message': 'NeuraFlux API Online', 'docs': '/docs'}
 
 
-@app.get('/api/health')
-def health():
-    return {'status': 'ok'}
-
-
 @app.post('/api/contact')
 async def contact_form(body: ContactForm):
-    """
-    Triggered when visitor submits the contact form on the website.
-    Saves to Supabase and adds to Brevo Email Only list (ID 6).
-    Brevo automatically sends Sequence B emails.
-    """
     try:
-        print("Contact form received")
-
-        # Save to Supabase
         supabase.table("Leads").insert({
             "name": body.name,
             "email": body.email,
@@ -112,29 +101,20 @@ async def contact_form(body: ContactForm):
             "sequence": "B"
         }).execute()
 
-        print("Saved to Supabase")
-
-        # Add to Brevo Email Only list — triggers Sequence B automatically
         add_to_brevo(body.email, body.name.split()[0], 6)
-
         return {"status": "success"}
-
     except Exception as e:
-        print(f"Error in /api/contact: {e}")
-        raise HTTPException(status_code=500, detail="Something went wrong")
+        raise HTTPException(status_code=500, detail="Internal Server Error")
 
 
 @app.post('/api/audit-booked')
 async def audit_booked(body: AuditPayload):
     """
-    Triggered by Cal.com webhook when someone books a Free AI Growth Audit.
-    Saves to Supabase and adds to Brevo Booked Audit list (ID 7).
-    Passes calendar URL, reschedule URL, and start time as contact attributes.
-    Brevo automation sends NF-A1 email automatically using these attributes.
+    Extracts booking details from Cal.com and passes them to Brevo.
+    Ensures the 'Add to Calendar' button leads to a real booking page.
     """
     try:
         print('Audit booking webhook received')
-
         data = body.payload
         attendees = data.get('attendees', [])
 
@@ -148,18 +128,22 @@ async def audit_booked(body: AuditPayload):
         if not email:
             return {'status': 'error', 'message': 'No email in payload'}
 
-        # Extract booking details from Cal.com payload
+        # --- SARMAD'S BOOKING PAGE ---
+        SARMAD_BOOKING_PAGE = "https://cal.com/neuraflux-iitdmq/30min"
+
+        # Extract details from Cal.com
         start_time = data.get('startTime', '')
         booking_uid = data.get('uid', '')
-        video_url = data.get('metadata', {}).get('videoCallUrl', '')
         
-        if not video_url:
-            video_url = data.get('location', 'https://app.cal.com/video')
+        # Check for specific video link; use booking page as fallback
+        video_url = data.get('metadata', {}).get('videoCallUrl', '')
+        if not video_url or "app.cal.com/video" in video_url:
+            video_url = SARMAD_BOOKING_PAGE
 
-        # Build reschedule URL from booking UID
+        # [span_5](start_span)Build reschedule URL[span_5](end_span)
         reschedule_url = f'https://cal.com/reschedule/{booking_uid}'
 
-        # Save to Supabase
+        # 1. [span_6](start_span)Save to Supabase[span_6](end_span)
         supabase.table('Leads').insert({
             'name': name,
             'email': email,
@@ -168,28 +152,14 @@ async def audit_booked(body: AuditPayload):
             'business': 'Booked Audit'
         }).execute()
 
-        print(f'Saved audit lead: {email}')
-
-        # Add to Brevo Booked Audit list with all attributes
-        # This triggers Sequence A automatically
-        # Brevo uses these attributes to fill the email template buttons
-        try:
-            contact = sib_api_v3_sdk.CreateContact(
-                email=email,
-                attributes={
-                    'FIRSTNAME': first_name,
-                    'CALENDAR_URL': video_url,
-                    'RESCHEDULE_URL': reschedule_url,
-                    'START_TIME': start_time
-                },
-                list_ids=[7],
-                update_enabled=True
-            )
-            contact_api.create_contact(contact)
-            print(f'Contact added to Brevo list 7: {email}')
-        except Exception as e:
-            print(f'Brevo error: {e}')
-            raise Exception(f'Brevo failed: {e}')
+        # 2. [span_7](start_span)Add to Brevo with button attributes[span_7](end_span)
+        custom_attributes = {
+            'CALENDAR_URL': video_url,
+            'RESCHEDULE_URL': reschedule_url,
+            'START_TIME': start_time
+        }
+        
+        add_to_brevo(email, first_name, 7, custom_attributes)
 
         return {'status': 'success'}
 
@@ -200,28 +170,14 @@ async def audit_booked(body: AuditPayload):
 
 @app.post('/api/chat/email')
 async def chat_email(body: ChatEmail):
-    """
-    Triggered when the chatbot captures a visitor's email.
-    Saves to Supabase and adds to Brevo Email Only list (ID 6).
-    Brevo automatically sends Sequence B emails.
-    """
     try:
-        print("Chatbot email capture received")
-
-        # Save to Supabase
         supabase.table("Chat_sessions").insert({
             "email": body.email,
             "flow": body.flow,
             "messages": []
         }).execute()
 
-        print(f"Chat session saved: {body.email}")
-
-        # Add to Brevo Email Only list — triggers Sequence B automatically
         add_to_brevo(body.email, body.name.split()[0], 6)
-
         return {"status": "success"}
-
     except Exception as e:
-        print(f"Error in /api/chat/email: {e}")
-        raise HTTPException(status_code=500, detail="Something went wrong")
+        raise HTTPException(status_code=500, detail="Internal Server Error")
