@@ -60,8 +60,7 @@ app.add_middleware(
 
 def add_to_brevo(email: str, first_name: str, list_id: int, attributes: dict = None):
     """
-    Adds a contact to a Brevo list.
-    Attributes support dynamic fields like CALENDAR_URL and RESCHEDULE_URL.
+    [span_2](start_span)Adds a contact to a Brevo list with dynamic attributes.[span_2](end_span)
     """
     try:
         if attributes is None:
@@ -110,8 +109,8 @@ async def contact_form(body: ContactForm):
 @app.post('/api/audit-booked')
 async def audit_booked(body: AuditPayload):
     """
-    Extracts booking details from Cal.com and passes them to Brevo.
-    Ensures the 'Add to Calendar' button leads to a real booking page.
+    [span_3](start_span)Extracts booking details from Cal.com and passes them to Brevo.[span_3](end_span)
+    [span_4](start_span)[span_5](start_span)Ensures both buttons lead to valid pages to avoid "No event types" errors.[span_4](end_span)[span_5](end_span)
     """
     try:
         print('Audit booking webhook received')
@@ -131,19 +130,23 @@ async def audit_booked(body: AuditPayload):
         # --- SARMAD'S BOOKING PAGE ---
         SARMAD_BOOKING_PAGE = "https://cal.com/neuraflux-iitdmq/30min"
 
-        # Extract details from Cal.com
+        # [span_6](start_span)Extract details from Cal.com payload[span_6](end_span)
         start_time = data.get('startTime', '')
         booking_uid = data.get('uid', '')
         
-        # Check for specific video link; use booking page as fallback
+        # 1. Logic for CALENDAR_URL (Add to Calendar button)
         video_url = data.get('metadata', {}).get('videoCallUrl', '')
         if not video_url or "app.cal.com/video" in video_url:
             video_url = SARMAD_BOOKING_PAGE
 
-        # [span_5](start_span)Build reschedule URL[span_5](end_span)
-        reschedule_url = f'https://cal.com/reschedule/{booking_uid}'
+        # 2. Logic for RESCHEDULE_URL (Pick a new time button)
+        # If UID is missing, fall back to the main booking page to prevent errors
+        if booking_uid:
+            reschedule_url = f'https://cal.com/reschedule/{booking_uid}'
+        else:
+            reschedule_url = SARMAD_BOOKING_PAGE
 
-        # 1. [span_6](start_span)Save to Supabase[span_6](end_span)
+        # [span_7](start_span)Save to Supabase[span_7](end_span)
         supabase.table('Leads').insert({
             'name': name,
             'email': email,
@@ -152,7 +155,7 @@ async def audit_booked(body: AuditPayload):
             'business': 'Booked Audit'
         }).execute()
 
-        # 2. [span_7](start_span)Add to Brevo with button attributes[span_7](end_span)
+        # [span_8](start_span)Add to Brevo with updated attributes[span_8](end_span)
         custom_attributes = {
             'CALENDAR_URL': video_url,
             'RESCHEDULE_URL': reschedule_url,
