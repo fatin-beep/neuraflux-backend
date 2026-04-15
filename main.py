@@ -1,6 +1,8 @@
 import os
 import sib_api_v3_sdk
-
+import httpx
+import asyncio
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, EmailStr
@@ -10,11 +12,8 @@ from supabase import create_client, Client
 # --- LOAD ENV ---
 load_dotenv()
 
-app = FastAPI()
-
 # --- VALIDATE ENV ---
 REQUIRED_ENV = ["BREVO_API_KEY", "SUPABASE_URL", "SUPABASE_KEY"]
-
 for var in REQUIRED_ENV:
     if not os.getenv(var):
         raise Exception(f"Missing ENV variable: {var}")
@@ -48,6 +47,33 @@ contact_api = sib_api_v3_sdk.ContactsApi(
     sib_api_v3_sdk.ApiClient(configuration)
 )
 
+# --- KEEP ALIVE LOGIC ---
+
+async def keep_alive():
+    """Ping our own server every 14 minutes to prevent Railway sleep"""
+    await asyncio.sleep(60)  # wait 1 minute after startup
+    while True:
+        try:
+            async with httpx.AsyncClient() as client:
+                # This pings your health endpoint to keep the instance active
+                await client.get(
+                    'https://web-production-f3c75.up.railway.app/api/health',
+                    timeout=10
+                )
+            print('Keep-alive ping sent')
+        except Exception as e:
+            print(f'Keep-alive failed (non-critical): {e}')
+        await asyncio.sleep(840)  # 14 minutes
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Start the keep-alive task on startup
+    asyncio.create_task(keep_alive())
+    yield
+
+# --- APP INITIALIZATION ---
+app = FastAPI(lifespan=lifespan)
+
 # --- MIDDLEWARE ---
 app.add_middleware(
     CORSMiddleware,
@@ -59,13 +85,9 @@ app.add_middleware(
 # --- HELPER ---
 
 def add_to_brevo(email: str, first_name: str, list_id: int, attributes: dict = None):
-    """
-    [span_2](start_span)Adds a contact to a Brevo list with dynamic attributes.[span_2](end_span)
-    """
     try:
         if attributes is None:
             attributes = {}
-        
         attributes['FIRSTNAME'] = first_name
 
         contact = sib_api_v3_sdk.CreateContact(
@@ -80,13 +102,15 @@ def add_to_brevo(email: str, first_name: str, list_id: int, attributes: dict = N
         print(f"Brevo error: {e}")
         raise Exception(f"Brevo failed: {e}")
 
-
 # --- ROUTES ---
 
 @app.get('/')
 def home():
     return {'message': 'NeuraFlux API Online', 'docs': '/docs'}
 
+@app.get('/api/health')
+def health():
+    return {'status': 'ok'}
 
 @app.post('/api/contact')
 async def contact_form(body: ContactForm):
@@ -99,19 +123,13 @@ async def contact_form(body: ContactForm):
             "source": "form",
             "sequence": "B"
         }).execute()
-
         add_to_brevo(body.email, body.name.split()[0], 6)
         return {"status": "success"}
     except Exception as e:
         raise HTTPException(status_code=500, detail="Internal Server Error")
 
-
 @app.post('/api/audit-booked')
 async def audit_booked(body: AuditPayload):
-    """
-    [span_3](start_span)Extracts booking details from Cal.com and passes them to Brevo.[span_3](end_span)
-    [span_4](start_span)[span_5](start_span)Ensures both buttons lead to valid pages to avoid "No event types" errors.[span_4](end_span)[span_5](end_span)
-    """
     try:
         print('Audit booking webhook received')
         data = body.payload
@@ -130,23 +148,22 @@ async def audit_booked(body: AuditPayload):
         # --- SARMAD'S BOOKING PAGE ---
         SARMAD_BOOKING_PAGE = "https://cal.com/neuraflux-iitdmq/30min"
 
-        # [span_6](start_span)Extract details from Cal.com payload[span_6](end_span)
+        # Extract details from Cal.com
         start_time = data.get('startTime', '')
         booking_uid = data.get('uid', '')
         
-        # 1. Logic for CALENDAR_URL (Add to Calendar button)
+        # Logic for CALENDAR_URL
         video_url = data.get('metadata', {}).get('videoCallUrl', '')
         if not video_url or "app.cal.com/video" in video_url:
             video_url = SARMAD_BOOKING_PAGE
 
-        # 2. Logic for RESCHEDULE_URL (Pick a new time button)
-        # If UID is missing, fall back to the main booking page to prevent errors
+        # Logic for RESCHEDULE_URL
         if booking_uid:
             reschedule_url = f'https://cal.com/reschedule/{booking_uid}'
         else:
             reschedule_url = SARMAD_BOOKING_PAGE
 
-        # [span_7](start_span)Save to Supabase[span_7](end_span)
+        # 1. Save to Supabase
         supabase.table('Leads').insert({
             'name': name,
             'email': email,
@@ -155,21 +172,18 @@ async def audit_booked(body: AuditPayload):
             'business': 'Booked Audit'
         }).execute()
 
-        # [span_8](start_span)Add to Brevo with updated attributes[span_8](end_span)
+        # 2. Add to Brevo with button attributes
         custom_attributes = {
             'CALENDAR_URL': video_url,
             'RESCHEDULE_URL': reschedule_url,
             'START_TIME': start_time
         }
-        
         add_to_brevo(email, first_name, 7, custom_attributes)
 
         return {'status': 'success'}
-
     except Exception as e:
         print(f'Error in /api/audit-booked: {e}')
         raise HTTPException(status_code=500, detail='Something went wrong')
-
 
 @app.post('/api/chat/email')
 async def chat_email(body: ChatEmail):
@@ -179,7 +193,6 @@ async def chat_email(body: ChatEmail):
             "flow": body.flow,
             "messages": []
         }).execute()
-
         add_to_brevo(body.email, body.name.split()[0], 6)
         return {"status": "success"}
     except Exception as e:
